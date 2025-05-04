@@ -6,23 +6,37 @@
 #include <ArduinoJson.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
+#include <esp_wifi.h>  // <-- Add this for MAC address functions
+#include <WiFi.h>
 
 
+// ====== CONSTANTS ======
+const int lisIntPin = 13; // LIS3DH INT1 connected to GPIO13
+const int ledPin = 2;     // Onboard LED (typically GPIO2)
+const int buttonPin = 12;
+const unsigned long debounceDelay = 50;
 
 // ====== GLOBAL OBJECTS ======
 BluetoothSerial SerialBT;
 RTC_DS3231 rtc;
+Adafruit_LIS3DH lis = Adafruit_LIS3DH();
+int tapCount = 2;  // Default value, can be 1 or 2
+int sensitivity = 20;    // default value, can be 1 to 200
+
+
+// ====== FLAGS ======
+volatile bool knockDetected = false;
 
 // ====== CONFIG STRUCT ======
 struct Config {
   String trapName = "Trap_Default";
-  int lineCount = 30;
-} config;
-
+  int lineCount = 50;
+  int tapCount;     // Add this line for tapCount
+  int sensitivity;  // Add this line for sensitivity
+} //config;
+config;  // Declare an instance of the Config struct
 const char* configFilePath = "/config.json";
 String logFilePath;
-const int buttonPin = 12;
-const unsigned long debounceDelay = 50;
 
 // ====== BUTTON STATE ======
 bool lastStableState = HIGH;
@@ -32,10 +46,40 @@ unsigned long lastDebounceTime = 0;
 // ====== BLUETOOTH COMMAND BUFFER ======
 String inputBuffer = "";
 
+// ====== FUNCTION DECLARATIONS ======
+void knockISR();
+void syncSystemTimeWithRTC();
+void checkButtonPress();
+void checkBluetoothInput();
+void processCommand(String cmd);
+void loadConfig();
+void saveConfig();
+void updateLogFilePath();
+void logEvent(String message);
+void loadSettings();
+
+String getMacAddress() {
+  uint8_t mac[6];
+  esp_wifi_get_mac(WIFI_IF_STA, mac); // <-- Corrected function and constant
+  char macStr[18];
+  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(macStr);
+}
+
+
+
 // ====== SETUP ======
 void setup() {
   Serial.begin(115200);
+
+  WiFi.mode(WIFI_STA); // Initialize Wi-Fi hardware in Station mode
+  WiFi.disconnect(true); // Disconnect from any network, but load real MAC address
+
+  pinMode(lisIntPin, INPUT_PULLUP);
+  pinMode(ledPin, OUTPUT);
   pinMode(buttonPin, INPUT_PULLUP);
+  digitalWrite(ledPin, LOW);
 
   SerialBT.begin("TrapLogger");
   Serial.println("Bluetooth ready. Connect to: TrapLogger");
@@ -53,18 +97,49 @@ void setup() {
 
   loadConfig();
   updateLogFilePath();
-
-  // Sync system time with RTC on boot
   syncSystemTimeWithRTC();
+
+  if (!lis.begin(0x19)) { // 0x18 or 0x19 is the LIS3DH I2C address
+    Serial.println("Could not start LIS3DH!");
+    while (1);
+  }
+  Serial.println("LIS3DH found!");
+  lis.setRange(LIS3DH_RANGE_2_G); //2_G, 4_G, 8_G, 16_G
+  loadSettings();
+  lis.setClick(tapCount, sensitivity); // Single or Double tap detection, tap sensitivity
+
+  attachInterrupt(digitalPinToInterrupt(lisIntPin), knockISR, FALLING);
+Wire.beginTransmission(0x19); // Your sensor address 
+Wire.write(0x22);             // CTRL_REG3 address
+Wire.write(0x80);             // Set CLICK interrupt on INT1
+Wire.endTransmission();
+
+}
+
+// ====== INTERRUPT SERVICE ROUTINE ======
+void IRAM_ATTR knockISR() {
+  knockDetected = true;
 }
 
 // ====== MAIN LOOP ======
 void loop() {
-  checkBluetoothInput();
+  if (knockDetected) {
+    knockDetected = false;
+
+    Serial.println("Knock detected!");
+    logEvent("KNOCK DETECTED");
+    SerialBT.println("Knock detected! Event logged.");
+
+    digitalWrite(ledPin, HIGH);
+    delay(200);
+    digitalWrite(ledPin, LOW);
+  }
+
   checkButtonPress();
+  checkBluetoothInput();
 }
 
-// ===== SYNC SYSTEM TIME FROM RTC =====
+// ====== SYNC SYSTEM TIME FROM RTC ======
 void syncSystemTimeWithRTC() {
   DateTime now = rtc.now();
   struct tm timeinfo;
@@ -75,19 +150,23 @@ void syncSystemTimeWithRTC() {
   timeinfo.tm_min  = now.minute();
   timeinfo.tm_sec  = now.second();
   timeinfo.tm_isdst = 0;
+
   time_t t = mktime(&timeinfo);
   struct timeval tv = { t, 0 };
   settimeofday(&tv, nullptr);
+
   Serial.println("System time synced with RTC.");
 }
 
 // ====== BUTTON HANDLING ======
 void checkButtonPress() {
   bool currentRead = digitalRead(buttonPin);
+
   if (currentRead != lastReadState) {
     lastDebounceTime = millis();
     lastReadState = currentRead;
   }
+
   if ((millis() - lastDebounceTime) > debounceDelay) {
     if (currentRead != lastStableState) {
       lastStableState = currentRead;
@@ -123,11 +202,12 @@ void processCommand(String cmd) {
     SerialBT.println("CLEAR_LOGS - Clear all logs");
     SerialBT.println("SYNC_TIME - Sync system time from RTC");
     SerialBT.println("SET_RTC YYYY-MM-DD HH:MM:SS - Set RTC time");
-    SerialBT.println("READ_TIME - Show current RTC time");
     SerialBT.println("SET_NAME NewName");
-    SerialBT.println("GET_NAME");
     SerialBT.println("SET_LINE_COUNT <number>");
-    SerialBT.println("SHOW_CONFIG");
+    SerialBT.println("ADD_NOTE <message> - Add a note to the logs");
+    SerialBT.println("CURRENT_CONFIG - Show all settings");
+    SerialBT.println("SET_TAP 1 or SET_TAP 2 - Single or Double Tap");
+    SerialBT.println("SET_SENSITIVITY <1-127> - Set tap sensitivity");
   }
 
   else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
@@ -155,10 +235,16 @@ void processCommand(String cmd) {
   else if (cmd.startsWith("SET_RTC")) {
     String dateTime = cmd.substring(8);
     dateTime.trim();
-    if (dateTime.length() != 19) {
+    if (dateTime.length() < 19) {
       SerialBT.println("Invalid format. Use: SET_RTC YYYY-MM-DD HH:MM:SS");
       return;
     }
+    // Now check if the characters in important places are correct
+  if (dateTime.charAt(4) != '-' || dateTime.charAt(7) != '-' || dateTime.charAt(10) != ' ' ||
+      dateTime.charAt(13) != ':' || dateTime.charAt(16) != ':') {
+    SerialBT.println("Invalid format. Use: SET_RTC YYYY-MM-DD HH:MM:SS");
+    return;
+  }
     int year = dateTime.substring(0, 4).toInt();
     int month = dateTime.substring(5, 7).toInt();
     int day = dateTime.substring(8, 10).toInt();
@@ -167,6 +253,7 @@ void processCommand(String cmd) {
     int second = dateTime.substring(17, 19).toInt();
     rtc.adjust(DateTime(year, month, day, hour, minute, second));
     SerialBT.println("RTC updated.");
+    Serial.printf("RTC set to: %04d-%02d-%02d %02d:%02d:%02d\n", year, month, day, hour, minute, second);
   }
 
   else if (cmd.equalsIgnoreCase("READ_TIME")) {
@@ -186,7 +273,6 @@ void processCommand(String cmd) {
       return;
     }
 
-    // Delete old log file
     if (SPIFFS.exists(logFilePath)) {
       SPIFFS.remove(logFilePath);
     }
@@ -198,9 +284,6 @@ void processCommand(String cmd) {
     SerialBT.println("Trap name updated to: " + config.trapName);
   }
 
-  else if (cmd.equalsIgnoreCase("GET_NAME")) {
-    SerialBT.println("Trap name: " + config.trapName);
-  }
 
   else if (cmd.startsWith("SET_LINE_COUNT")) {
     int newCount = cmd.substring(15).toInt();
@@ -212,19 +295,116 @@ void processCommand(String cmd) {
     saveConfig();
     SerialBT.println("Line count set to: " + String(newCount));
   }
+    
+  else if (cmd.startsWith("ADD_NOTE")) {    // Add new "ADD_NOTE" command
+    String noteMessage = cmd.substring(9);  // Remove "ADD_NOTE" part
+    noteMessage.trim();
 
-  else if (cmd.equalsIgnoreCase("SHOW_CONFIG")) {
-    SerialBT.println("Current Configuration:");
-    SerialBT.println("Trap Name: " + config.trapName);
-    SerialBT.println("Max Log Lines: " + String(config.lineCount));
+    if (noteMessage.length() == 0) {
+      SerialBT.println("Please provide a message for the note.");
+      return;
+    }
+
+    logEvent("NOTE " + noteMessage);  // Log the note with a timestamp
+    SerialBT.println("Note added: " + noteMessage);
   }
+
+else if (cmd.equalsIgnoreCase("CURRENT_CONFIG")) {
+  SerialBT.println("===== Current Configuration =====");
+
+  SerialBT.println("Trap Name: " + config.trapName);
+
+  DateTime now = rtc.now();
+  char rtcTime[30];
+  sprintf(rtcTime, "%04d-%02d-%02d %02d:%02d:%02d",
+          now.year(), now.month(), now.day(),
+          now.hour(), now.minute(), now.second());
+  SerialBT.println("RTC Time: " + String(rtcTime));
+
+  SerialBT.println("Max Log Lines: " + String(config.lineCount));
+
+
+    SerialBT.println("MAC Address: " + getMacAddress());
+
+  SerialBT.println("Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap"));
+  SerialBT.println("Tap Sensitivity: " + String(config.sensitivity));
+}
+
+
+else if (cmd.startsWith("SET_TAP")) {
+    int spaceIndex = cmd.indexOf(' ');
+    if (spaceIndex != -1) {
+        String valueStr = cmd.substring(spaceIndex + 1);
+        int newValue = valueStr.toInt();
+        if (newValue == 1 || newValue == 2) {
+            tapCount = newValue;
+            config.tapCount = tapCount;
+            lis.setClick(tapCount, sensitivity);  // re-apply settings to sensor
+            saveConfig();
+            Serial.println("Tap limit updated to " + String(tapCount));
+            SerialBT.println("Tap limit updated to " + String(tapCount));
+        } else {
+            Serial.println("Invalid tap limit. Must be 1 or 2.");
+            SerialBT.println("Invalid tap limit. Must be 1 or 2.");
+        }
+    } else {
+        Serial.println("No value provided for SET_TAP");
+    }
+}
+
+else if (cmd.startsWith("SET_SENSITIVITY")) {
+    int spaceIndex = cmd.indexOf(' ');
+    if (spaceIndex != -1) {
+        String valueStr = cmd.substring(spaceIndex + 1);
+        int newValue = valueStr.toInt();
+        if (newValue >= 1 && newValue <= 127) {
+            sensitivity = newValue;
+            config.sensitivity = sensitivity;
+            lis.setClick(tapCount, sensitivity);  // re-apply settings to sensor
+            saveConfig();
+            Serial.println("Sensitivity updated to " + String(sensitivity));
+            SerialBT.println("Sensitivity updated to " + String(sensitivity));
+        } else {
+            Serial.println("Invalid sensitivity. Must be 1-127.");
+            SerialBT.println("Invalid sensitivity. Must be 1-127.");
+        }
+    } else {
+        Serial.println("No value provided for SET_SENSITIVITY");
+    }
+}
+
+
 
   else {
     SerialBT.println("Unknown command. Type HELP for list.");
   }
 }
-
-// ====== CONFIG FILE ======
+void handleCommand(String cmd) {
+  if (cmd.startsWith("SET_TAP")) {      // Example: SET_TAP 1 or SET_TAP 2
+    int newtapCount = cmd.substring(8).toInt(); // Extract the number after "SET_TAP "
+    if (newtapCount == 1 || newtapCount == 2) {
+      config.tapCount = newtapCount;  // Update the tap limit
+      saveConfig();  // Save the updated config to SPIFFS
+      Serial.print("Tap limit set to: ");
+      Serial.println(config.tapCount);
+    } else {
+      Serial.println("Invalid tap limit value. Use 1 or 2.");
+    }
+  }
+  
+  else if (cmd.startsWith("SET_SENSITIVITY")) {      // Example: SET_SENSITIVITY 100
+    int newSensitivity = cmd.substring(16).toInt();  // Extract the value after "SET_SENSITIVITY "
+    if (newSensitivity >= 1 && newSensitivity <= 127) {
+      config.sensitivity = newSensitivity;  // Update the sensitivity value
+      saveConfig();  // Save the updated config to SPIFFS
+      Serial.print("Sensitivity set to: ");
+      Serial.println(config.sensitivity);
+    } else {
+      Serial.println("Invalid sensitivity value. Use a value between 1 and 200.");
+    }
+  }
+}
+// ====== CONFIG FILE HANDLING ======
 void loadConfig() {
   File file = SPIFFS.open(configFilePath, FILE_READ);
   if (!file) {
@@ -244,28 +424,32 @@ void loadConfig() {
 
   config.trapName = doc["trapName"].as<String>();
   config.lineCount = doc["lineCount"] | 30;
+  config.tapCount = doc["tapCount"] | 2;           // Set default value for tapCount
+  config.sensitivity = doc["sensitivity"] | 20;   // Set default value for sensitivity
 }
 
 void saveConfig() {
   StaticJsonDocument<256> doc;
   doc["trapName"] = config.trapName;
   doc["lineCount"] = config.lineCount;
+  doc["tapCount"] = config.tapCount;
+  doc["sensitivity"] = config.sensitivity;
 
   File file = SPIFFS.open(configFilePath, FILE_WRITE);
   if (!file) {
-    Serial.println("Failed to open config file for writing.");
+    Serial.println("Failed to open config file for writing!");
     return;
   }
   serializeJson(doc, file);
   file.close();
-  Serial.println("Config saved.");
+  Serial.println("Configuration saved.");
 }
 
 void updateLogFilePath() {
-  logFilePath = "/" + config.trapName + ".log";
+  logFilePath = "/" + config.trapName + "_logs.txt";
 }
 
-// ====== EVENT LOGGING ======
+// ====== LOGGING FUNCTION ======
 void logEvent(String message) {
   File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
   if (!logFile) {
@@ -309,3 +493,50 @@ void enforceLogLimit() {
     Serial.println("Old logs trimmed to maintain line limit.");
   }
 }
+void handleBluetoothCommands() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim(); // Remove any whitespace/newline
+
+    if (input.startsWith("SET_TAP ")) {
+      int newTap = input.substring(8).toInt();
+      if (newTap == 1 || newTap == 2) {
+        tapCount = newTap;
+        lis.setClick(tapCount, sensitivity);
+        Serial.println("Tap setting updated.");
+      } else {
+        Serial.println("Invalid tap setting! Must be 1 or 2.");
+      }
+    } 
+    else if (input.startsWith("SET_SENSITIVITY ")) {
+      int newSensitivity = input.substring(16).toInt();
+      if (newSensitivity >= 1 && newSensitivity <= 200) {
+        sensitivity = newSensitivity;
+        lis.setClick(tapCount, sensitivity);
+        Serial.println("Sensitivity setting updated.");
+      } else {
+        Serial.println("Invalid sensitivity! Must be 1 to 200.");
+      }
+    } 
+    else {
+      Serial.println("Unknown command.");
+    }
+  }
+}
+void loadSettings() {
+  File settingsFile = SPIFFS.open(configFilePath, "r");
+  if (settingsFile) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, settingsFile);
+    if (!error) {
+      config.tapCount = doc["tapCount"] | 0; // default 0 if missing
+      config.sensitivity = doc["sensitivity"] | 127; // default 127 if missing
+    } else {
+      Serial.println("Failed to parse config file.");
+    }
+    settingsFile.close();
+  } else {
+    Serial.println("Failed to open config file for reading.");
+  }
+}
+
