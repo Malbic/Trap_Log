@@ -6,8 +6,8 @@
 #include <ArduinoJson.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
-#include <esp_wifi.h>  // <-- Add this for MAC address functions
-#include <WiFi.h>
+//#include <esp_wifi.h>  // <-- Add this for MAC address functions
+//#include <WiFi.h>
 
 
 // ====== CONSTANTS ======
@@ -59,14 +59,14 @@ void updateLogFilePath();
 void logEvent(String message);
 void loadSettings();
 
-String getMacAddress() {
-  uint8_t mac[6];
-  esp_wifi_get_mac(WIFI_IF_STA, mac); // <-- Corrected function and constant
-  char macStr[18];
-  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
-          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  return String(macStr);
-}
+//String getMacAddress() {
+//  uint8_t mac[6];
+//  esp_wifi_get_mac(WIFI_IF_STA, mac); // <-- Corrected function and constant
+//  char macStr[18];
+//  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+//          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+ //return String(macStr);
+//}
 
 
 
@@ -74,8 +74,8 @@ String getMacAddress() {
 void setup() {
   Serial.begin(115200);
 
-  WiFi.mode(WIFI_STA); // Initialize Wi-Fi hardware in Station mode
-  WiFi.disconnect(true); // Disconnect from any network, but load real MAC address
+ // WiFi.mode(WIFI_STA); // Initialize Wi-Fi hardware in Station mode
+ // WiFi.disconnect(true); // Disconnect from any network, but load real MAC address
 
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
@@ -103,7 +103,8 @@ void setup() {
   loadConfig();
   updateLogFilePath();
   syncSystemTimeWithRTC();
-
+  
+    // Initialize LIS3DH sensor
   if (!lis.begin(LIS3DH_I2C_ADDRESS)) { 
     Serial.println("Could not start LIS3DH!");
     while (1);
@@ -111,7 +112,7 @@ void setup() {
   Serial.println("LIS3DH found!");
   lis.setRange(LIS3DH_RANGE_2_G); //2_G, 4_G, 8_G, 16_G
   loadSettings();
-  lis.setClick(tapCount, sensitivity); // Single or Double tap detection, tap sensitivity
+  lis.setClick(config.tapCount, config.sensitivity); // Reapply saved settings
 
   attachInterrupt(digitalPinToInterrupt(lisIntPin), knockISR, FALLING);
 Wire.beginTransmission(LIS3DH_I2C_ADDRESS); 
@@ -329,7 +330,7 @@ else if (cmd.equalsIgnoreCase("CURRENT_CONFIG")) {
   SerialBT.println("Max Log Lines: " + String(config.lineCount));
 
 
-    SerialBT.println("MAC Address: " + getMacAddress());
+  //  SerialBT.println("MAC Address: " + getMacAddress());
 
   SerialBT.println("Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap"));
   SerialBT.println("Tap Sensitivity: " + String(config.sensitivity));
@@ -414,7 +415,7 @@ void loadConfig() {
   File file = SPIFFS.open(configFilePath, FILE_READ);
   if (!file) {
     Serial.println("No config file found. Using default.");
-    saveConfig();
+    saveConfig(); // Save default config
     return;
   }
 
@@ -428,9 +429,9 @@ void loadConfig() {
   }
 
   config.trapName = doc["trapName"].as<String>();
-  config.lineCount = doc["lineCount"] | 30;
-  config.tapCount = doc["tapCount"] | 2;           // Set default value for tapCount
-  config.sensitivity = doc["sensitivity"] | 20;   // Set default value for sensitivity
+  config.lineCount = doc["lineCount"] | 30;         // Default is 30
+  config.tapCount = doc["tapCount"] | 2;           // Default is 2 taps
+  config.sensitivity = doc["sensitivity"] | 20;   // Default sensitivity is 20
 }
 
 void saveConfig() {
