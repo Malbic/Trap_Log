@@ -15,13 +15,14 @@ const int lisIntPin = 13; // LIS3DH INT1 connected to GPIO13
 const int ledPin = 2;     // Onboard LED (typically GPIO2)
 const int buttonPin = 12;
 const unsigned long debounceDelay = 50;
+const uint8_t LIS3DH_I2C_ADDRESS = 0x19; // 0x18 or 0x19 is the LIS3DH I2C address
 
 // ====== GLOBAL OBJECTS ======
 BluetoothSerial SerialBT;
 RTC_DS3231 rtc;
 Adafruit_LIS3DH lis = Adafruit_LIS3DH();
 int tapCount = 2;  // Default value, can be 1 or 2
-int sensitivity = 20;    // default value, can be 1 to 200
+int sensitivity = 20;    // default value, can be 1 to 127
 
 
 // ====== FLAGS ======
@@ -33,7 +34,7 @@ struct Config {
   int lineCount = 50;
   int tapCount;     // Add this line for tapCount
   int sensitivity;  // Add this line for sensitivity
-} //config;
+} 
 config;  // Declare an instance of the Config struct
 const char* configFilePath = "/config.json";
 String logFilePath;
@@ -89,17 +90,21 @@ void setup() {
   }
 
   Wire.begin();
-  if (!rtc.begin()) {
-    Serial.println("RTC not found!");
-  } else if (rtc.lostPower()) {
-    Serial.println("RTC lost power, needs sync.");
-  }
+  if (!rtc.begin() || rtc.lostPower()) {
+  Serial.println("RTC not available. Skipping system time sync.");
+  return;
+}
+ // if (!rtc.begin()) {
+ //   Serial.println("RTC not found!");
+ // } else if (rtc.lostPower()) {
+ //   Serial.println("RTC lost power, needs sync.");
+ // }
 
   loadConfig();
   updateLogFilePath();
   syncSystemTimeWithRTC();
 
-  if (!lis.begin(0x19)) { // 0x18 or 0x19 is the LIS3DH I2C address
+  if (!lis.begin(LIS3DH_I2C_ADDRESS)) { 
     Serial.println("Could not start LIS3DH!");
     while (1);
   }
@@ -109,7 +114,7 @@ void setup() {
   lis.setClick(tapCount, sensitivity); // Single or Double tap detection, tap sensitivity
 
   attachInterrupt(digitalPinToInterrupt(lisIntPin), knockISR, FALLING);
-Wire.beginTransmission(0x19); // Your sensor address 
+Wire.beginTransmission(LIS3DH_I2C_ADDRESS); 
 Wire.write(0x22);             // CTRL_REG3 address
 Wire.write(0x80);             // Set CLICK interrupt on INT1
 Wire.endTransmission();
@@ -400,7 +405,7 @@ void handleCommand(String cmd) {
       Serial.print("Sensitivity set to: ");
       Serial.println(config.sensitivity);
     } else {
-      Serial.println("Invalid sensitivity value. Use a value between 1 and 200.");
+      Serial.println("Invalid sensitivity value. Use a value between 1 and 127.");
     }
   }
 }
@@ -510,12 +515,12 @@ void handleBluetoothCommands() {
     } 
     else if (input.startsWith("SET_SENSITIVITY ")) {
       int newSensitivity = input.substring(16).toInt();
-      if (newSensitivity >= 1 && newSensitivity <= 200) {
+      if (newSensitivity >= 1 && newSensitivity <= 127) {
         sensitivity = newSensitivity;
         lis.setClick(tapCount, sensitivity);
         Serial.println("Sensitivity setting updated.");
       } else {
-        Serial.println("Invalid sensitivity! Must be 1 to 200.");
+        Serial.println("Invalid sensitivity! Must be 1 to 127.");
       }
     } 
     else {
@@ -529,8 +534,8 @@ void loadSettings() {
     StaticJsonDocument<256> doc;
     DeserializationError error = deserializeJson(doc, settingsFile);
     if (!error) {
-      config.tapCount = doc["tapCount"] | 0; // default 0 if missing
-      config.sensitivity = doc["sensitivity"] | 127; // default 127 if missing
+      config.tapCount = doc["tapCount"] | 2; // default 2 if missing
+      config.sensitivity = doc["sensitivity"] | 20; // default 20 if missing
     } else {
       Serial.println("Failed to parse config file.");
     }
