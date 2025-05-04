@@ -6,14 +6,16 @@
 #include <ArduinoJson.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
-//#include <esp_wifi.h>  // <-- Add this for MAC address functions
-//#include <WiFi.h>
+#include <esp_bt.h>
+#include <esp_wifi.h>
+#include <esp_sleep.h>
 
 
 // ====== CONSTANTS ======
 const int lisIntPin = 13; // LIS3DH INT1 connected to GPIO13
 const int ledPin = 2;     // Onboard LED (typically GPIO2)
 const int buttonPin = 12;
+const int wakeTime = 30;  // Time to stay awake after button press (in seconds)
 const unsigned long debounceDelay = 50;
 const uint8_t LIS3DH_I2C_ADDRESS = 0x19; // 0x18 or 0x19 is the LIS3DH I2C address
 
@@ -68,20 +70,17 @@ void loadSettings();
  //return String(macStr);
 //}
 
-
-
 // ====== SETUP ======
 void setup() {
   Serial.begin(115200);
 
- // WiFi.mode(WIFI_STA); // Initialize Wi-Fi hardware in Station mode
- // WiFi.disconnect(true); // Disconnect from any network, but load real MAC address
-
+    // Configure pins
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
   pinMode(buttonPin, INPUT_PULLUP);
   digitalWrite(ledPin, LOW);
-
+  
+  // Initialize Bluetooth
   SerialBT.begin("TrapLogger");
   Serial.println("Bluetooth ready. Connect to: TrapLogger");
 
@@ -113,8 +112,17 @@ void setup() {
   lis.setRange(LIS3DH_RANGE_2_G); //2_G, 4_G, 8_G, 16_G
   loadSettings();
   lis.setClick(config.tapCount, config.sensitivity); // Reapply saved settings
-
+  
+  // Attach interrupt for LIS3DH
   attachInterrupt(digitalPinToInterrupt(lisIntPin), knockISR, FALLING);
+  
+  // Configure deep sleep wake-up sources
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_12, LOW); // Wake on button press
+  esp_sleep_enable_ext1_wakeup((1ULL << lisIntPin), ESP_EXT1_WAKEUP_ANY_HIGH); // Wake on LIS3DH interrupt
+
+    // Print the reason for waking up
+  printWakeupReason();
+  
 Wire.beginTransmission(LIS3DH_I2C_ADDRESS); 
 Wire.write(0x22);             // CTRL_REG3 address
 Wire.write(0x80);             // Set CLICK interrupt on INT1
@@ -131,7 +139,8 @@ void IRAM_ATTR knockISR() {
 void loop() {
   if (knockDetected) {
     knockDetected = false;
-
+    
+    // Log the knock event
     Serial.println("Knock detected!");
     logEvent("KNOCK DETECTED");
     SerialBT.println("Knock detected! Event logged.");
@@ -139,10 +148,49 @@ void loop() {
     digitalWrite(ledPin, HIGH);
     delay(200);
     digitalWrite(ledPin, LOW);
+
+   // Go back to sleep
+    goToSleep();
+      // If Bluetooth is connected, stay awake
+  if (SerialBT.hasClient()) {
+    Serial.println("Bluetooth connected. Staying awake...");
+    delay(1000); // Check every second
+  } else {
+    // Go to sleep after wakeTime seconds
+    delay(1000 * wakeTime);
+    Serial.println("Bluetooth disconnected. Going to sleep...");
+    goToSleep();
+  }
   }
 
   checkButtonPress();
   checkBluetoothInput();
+}
+void knockISR() {
+  knockDetected = true;
+}
+
+// Function to put the device into deep sleep
+void goToSleep() {
+  Serial.println("Going to sleep...");
+  delay(100);
+  esp_deep_sleep_start();
+}
+// Function to print the reason for waking up
+void printWakeupReason() {
+  esp_sleep_wakeup_cause_t wakeupReason = esp_sleep_get_wakeup_cause();
+
+  switch (wakeupReason) {
+    case ESP_SLEEP_WAKEUP_EXT0:
+      Serial.println("Woke up from external signal using EXT0 (button)");
+      break;
+    case ESP_SLEEP_WAKEUP_EXT1:
+      Serial.println("Woke up from external signal using EXT1 (LIS3DH)");
+      break;
+    default:
+      Serial.println("Woke up from unknown reason");
+      break;
+  }
 }
 
 // ====== SYNC SYSTEM TIME FROM RTC ======
