@@ -103,7 +103,8 @@ void setup() {
   loadConfig();
   updateLogFilePath();
   syncSystemTimeWithRTC();
-
+  
+    // Initialize LIS3DH sensor
   if (!lis.begin(LIS3DH_I2C_ADDRESS)) { 
     Serial.println("Could not start LIS3DH!");
     while (1);
@@ -111,7 +112,7 @@ void setup() {
   Serial.println("LIS3DH found!");
   lis.setRange(LIS3DH_RANGE_2_G); //2_G, 4_G, 8_G, 16_G
   loadSettings();
-  lis.setClick(tapCount, sensitivity); // Single or Double tap detection, tap sensitivity
+  lis.setClick(config.tapCount, config.sensitivity); // Reapply saved settings
 
   attachInterrupt(digitalPinToInterrupt(lisIntPin), knockISR, FALLING);
 Wire.beginTransmission(LIS3DH_I2C_ADDRESS); 
@@ -414,7 +415,7 @@ void loadConfig() {
   File file = SPIFFS.open(configFilePath, FILE_READ);
   if (!file) {
     Serial.println("No config file found. Using default.");
-    saveConfig();
+    saveConfig(); // Save default config
     return;
   }
 
@@ -428,9 +429,9 @@ void loadConfig() {
   }
 
   config.trapName = doc["trapName"].as<String>();
-  config.lineCount = doc["lineCount"] | 30;
-  config.tapCount = doc["tapCount"] | 2;           // Set default value for tapCount
-  config.sensitivity = doc["sensitivity"] | 20;   // Set default value for sensitivity
+  config.lineCount = doc["lineCount"] | 30;         // Default is 30
+  config.tapCount = doc["tapCount"] | 2;           // Default is 2 taps
+  config.sensitivity = doc["sensitivity"] | 20;   // Default sensitivity is 20
 }
 
 void saveConfig() {
