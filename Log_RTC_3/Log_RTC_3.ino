@@ -6,8 +6,8 @@
 #include <ArduinoJson.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
-#include <esp_wifi.h>  // <-- Add this for MAC address functions
-#include <WiFi.h>
+//#include <esp_wifi.h>  // <-- Add this for MAC address functions
+//#include <WiFi.h>
 
 
 // ====== CONSTANTS ======
@@ -59,14 +59,14 @@ void updateLogFilePath();
 void logEvent(String message);
 void loadSettings();
 
-String getMacAddress() {
-  uint8_t mac[6];
-  esp_wifi_get_mac(WIFI_IF_STA, mac); // <-- Corrected function and constant
-  char macStr[18];
-  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
-          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  return String(macStr);
-}
+//String getMacAddress() {
+//  uint8_t mac[6];
+//  esp_wifi_get_mac(WIFI_IF_STA, mac); // <-- Corrected function and constant
+//  char macStr[18];
+//  sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+//          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+ //return String(macStr);
+//}
 
 
 
@@ -74,8 +74,8 @@ String getMacAddress() {
 void setup() {
   Serial.begin(115200);
 
-  WiFi.mode(WIFI_STA); // Initialize Wi-Fi hardware in Station mode
-  WiFi.disconnect(true); // Disconnect from any network, but load real MAC address
+ // WiFi.mode(WIFI_STA); // Initialize Wi-Fi hardware in Station mode
+ // WiFi.disconnect(true); // Disconnect from any network, but load real MAC address
 
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
@@ -329,7 +329,7 @@ else if (cmd.equalsIgnoreCase("CURRENT_CONFIG")) {
   SerialBT.println("Max Log Lines: " + String(config.lineCount));
 
 
-    SerialBT.println("MAC Address: " + getMacAddress());
+  //  SerialBT.println("MAC Address: " + getMacAddress());
 
   SerialBT.println("Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap"));
   SerialBT.println("Tap Sensitivity: " + String(config.sensitivity));
