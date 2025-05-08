@@ -1,3 +1,12 @@
+// ==========================================
+// Filename: Log_RTC_3.ino
+// Description: This program handles a trap logger using 
+//              an ESP32. It manages wakeup, Bluetooth 
+//              communication, RTC synchronization, and 
+//              logging events to SPIFFS.
+// Author: Malbic
+// ==========================================
+
 #include <BluetoothSerial.h>
 #include <FS.h>
 #include <SPIFFS.h>
@@ -15,6 +24,8 @@ const int ledPin = 2;     // Onboard LED (typically GPIO2)
 const unsigned long debounceDelay = 50;
 const unsigned long bluetoothThreshold = 1000; // 1 second threshold for enabling Bluetooth
 const uint8_t LIS3DH_I2C_ADDRESS = 0x19; // 0x18 or 0x19 is the LIS3DH I2C address
+const unsigned long BLUETOOTH_TIMEOUT = 15000; // Bluetooth timeout in milliseconds
+const unsigned long SERIAL_DELAY = 100;       // Delay for serial output in milliseconds
 
 // ====== GLOBAL OBJECTS ======
 BluetoothSerial SerialBT;
@@ -108,27 +119,30 @@ void loop() {
 
 // ====== HANDLE WAKE-UP ======
 void handleWakeup() {
-  // Print the wake-up reason
-  printWakeupReason();
-
-  // Check if the wake-up was caused by the configured pin
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
-    unsigned long startTime = millis();
-
-    // Measure how long the pin remains LOW
-    while (digitalRead(wakeupPin) == LOW) {
-      if (millis() - startTime > bluetoothThreshold) {
-        // Pin is LOW for more than 1 second: Enable Bluetooth
-        Serial.println("Pin LOW for >1 second. Enabling Bluetooth...");
-        enableBluetooth();
-        return;
-      }
+    printWakeupReason();
+    if (isWakeupFromPin()) {
+        if (isPinHeldLow()) {
+            Serial.println("Pin LOW for >1 second. Enabling Bluetooth...");
+            enableBluetooth();
+        } else {
+            Serial.println("Momentary pin LOW detected. Logging trap activation...");
+            logEvent("TRAP ACTIVATION");
+        }
     }
+}
 
-    // Pin was LOW momentarily: Treat as trap activation
-    Serial.println("Momentary pin LOW detected. Logging trap activation...");
-    logEvent("TRAP ACTIVATION");
-  }
+bool isWakeupFromPin() {
+    return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0;
+}
+
+bool isPinHeldLow() {
+    unsigned long startTime = millis();
+    while (digitalRead(wakeupPin) == LOW) {
+        if (millis() - startTime > bluetoothThreshold) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // ====== ENABLE BLUETOOTH ======
@@ -138,10 +152,10 @@ void enableBluetooth() {
 
   // Wait for a client or timeout
   unsigned long bluetoothStart = millis();
-  while (!SerialBT.hasClient() && (millis() - bluetoothStart < 15000)) {
+  while (!SerialBT.hasClient() && (millis() - bluetoothStart < BLUETOOTH_TIMEOUT) {
     delay(100); // Check every 100ms
   }
-
+    delay(SERIAL_DELAY); // Allow time for serial output
   if (SerialBT.hasClient()) {
     Serial.println("Bluetooth client connected.");
     handleBluetoothSession();
@@ -151,6 +165,57 @@ void enableBluetooth() {
 
   SerialBT.end(); // Disable Bluetooth
   enterDeepSleep();
+}
+void handleBluetoothSession() {
+    Serial.println("Bluetooth session active.");
+    while (SerialBT.available()) {
+        String command = SerialBT.readStringUntil('\n');
+        processBluetoothCommand(command);
+    }
+}
+
+void processBluetoothCommand(String command) {
+    if (command.startsWith("SET_TAP:")) {
+        config.tapCount = command.substring(8).toInt();
+        Serial.println("Tap count updated to: " + String(config.tapCount));
+        saveConfig();
+    } else if (command.startsWith("SET_SENS:")) {
+        config.sensitivity = command.substring(9).toInt();
+        Serial.println("Sensitivity updated to: " + String(config.sensitivity));
+        saveConfig();
+    } else {
+        Serial.println("Unknown command: " + command);
+    }
+}
+void logEvent(String message) {
+    DateTime now = rtc.now();
+    String timestamp = String(now.year()) + "-" + String(now.month()) + "-" + String(now.day()) +
+                       " " + String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second());
+    String logMessage = timestamp + ": " + message;
+
+    File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
+    if (logFile) {
+        logFile.println(logMessage);
+        logFile.close();
+    }
+    Serial.println(logMessage);
+}
+void logEvent(String message) {
+    DateTime now = rtc.now();
+    String timestamp = String(now.year()) + "-" + String(now.month()) + "-" + String(now.day()) +
+                       " " + String(now.hour()) + ":" + String(now.minute()) + ":" + String(now.second());
+    String logMessage = timestamp + ": " + message;
+
+    File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
+    if (logFile) {
+        logFile.println(logMessage);
+        logFile.close();
+    }
+    Serial.println(logMessage);
+}
+void updateLogFilePath() {
+    DateTime now = rtc.now();
+    logFilePath = "/log_" + String(now.year()) + "_" + String(now.month()) + "_" + String(now.day()) + ".txt";
 }
 
 // ====== ENTER DEEP SLEEP ======
@@ -162,12 +227,12 @@ void enterDeepSleep() {
 
 // ====== INTERRUPT SERVICE ROUTINE ======
 void IRAM_ATTR knockISR() {
-  static unsigned long lastInterruptTime = 0;
-  unsigned long interruptTime = millis();
-  if (interruptTime - lastInterruptTime > debounceDelay) {
-    knockDetected = true;
-  }
-  lastInterruptTime = interruptTime;
+    static unsigned long lastInterruptTime = 0;
+    unsigned long interruptTime = millis();
+    if (interruptTime - lastInterruptTime > debounceDelay) {
+        knockDetected = true;
+    }
+    lastInterruptTime = interruptTime;
 }
 
 // ====== PRINT WAKE-UP REASON ======
@@ -186,4 +251,3 @@ void printWakeupReason() {
       break;
   }
 }
-
