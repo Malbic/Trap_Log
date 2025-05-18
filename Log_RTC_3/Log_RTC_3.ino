@@ -7,7 +7,7 @@
 // Author: Malbic
 // ==========================================
 
-#include <BluetoothSerial.h>
+#include <NimBLEDevice.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include <RTClib.h>
@@ -15,7 +15,21 @@
 #include <ArduinoJson.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
+#include <NimBLEDevice.h>
 
+#define UART_SERVICE_UUID        "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define UART_CHAR_RX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+#define UART_CHAR_TX_UUID       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+
+NimBLECharacteristic* pTxCharacteristic;
+
+class UARTServerCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pCharacteristic) {
+        std::string rxValue = pCharacteristic->getValue();
+        // Handle incoming BLE UART data in rxValue
+        // For example, call your processCommand() with rxValue
+    }
+};
 
 
 // ====== CONSTANTS ======
@@ -25,7 +39,7 @@ const int buttonPin = 12;
 const unsigned long debounceDelay = 50;
 
 // ====== GLOBAL OBJECTS ======
-BluetoothSerial SerialBT;
+
 RTC_DS3231 rtc;
 Adafruit_LIS3DH lis = Adafruit_LIS3DH();
 int tapCount = 2;  // Default value, can be 1 or 2 as you said
@@ -57,7 +71,6 @@ String inputBuffer = "";
 // ====== FUNCTION DECLARATIONS ======
 void knockISR();
 void syncSystemTimeWithRTC();
-void checkBluetoothInput();
 void processCommand(String cmd);
 void loadConfig();
 void saveConfig();
@@ -81,8 +94,24 @@ void setup() {
   pinMode(buttonPin, INPUT_PULLUP);
   digitalWrite(ledPin, LOW);
 
-  SerialBT.begin("TrapLogger");
+     NimBLEDevice::init("TrapLogger"); // BLE device name
   Serial.println("Bluetooth ready. Connect to: TrapLogger");
+      NimBLEServer* pServer = NimBLEDevice::createServer();
+    NimBLEService* pService = pServer->createService(UART_SERVICE_UUID);
+
+    NimBLECharacteristic* pRxCharacteristic = pService->createCharacteristic(
+        UART_CHAR_RX_UUID,
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
+    );
+    pRxCharacteristic->setCallbacks(new UARTServerCallbacks());
+
+    pTxCharacteristic = pService->createCharacteristic(
+        UART_CHAR_TX_UUID,
+        NIMBLE_PROPERTY::NOTIFY
+    );
+
+    pService->start();
+    NimBLEDevice::startAdvertising();
 
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS Mount Failed!");
@@ -132,16 +161,13 @@ void loop() {
 
     Serial.println("Knock detected!");
     logEvent("KNOCK DETECTED");
-    SerialBT.println("Knock detected! Event logged.");
+    pTxCharacteristic->setValue("Knock detected! Event logged.");
+pTxCharacteristic->notify();
 
     digitalWrite(ledPin, HIGH);
     delay(200);
     digitalWrite(ledPin, LOW);
-  }
-
-  checkBluetoothInput();
-
- 
+  } 
 }
 
 // ====== SYNC SYSTEM TIME FROM RTC ======
@@ -165,72 +191,91 @@ void syncSystemTimeWithRTC() {
 
 
 
-// ====== BLUETOOTH COMMAND HANDLING ======
-void checkBluetoothInput() {
-  while (SerialBT.available()) {
-    char incoming = SerialBT.read();
-    if (incoming == '\n') {
-      processCommand(inputBuffer);
-      inputBuffer = "";
-    } else if (incoming != '\r') {
-      inputBuffer += incoming;
-    }
-  }
-}
 
 void processCommand(String cmd) {
   cmd.trim();
   Serial.println("Command: " + cmd);
 
   if (cmd.equalsIgnoreCase("HELP")) {
-    SerialBT.println("Commands:");
-    SerialBT.println("SHOW_LOGS - Display log entries");
-    SerialBT.println("CLEAR_LOGS - Clear all logs");
-    SerialBT.println("SYNC_TIME - Sync system time from RTC");
-    SerialBT.println("SET_RTC YYYY-MM-DD HH:MM:SS - Set RTC time");
-    SerialBT.println("SET_NAME NewName");
-    SerialBT.println("SET_LINE_COUNT <number>");
-    SerialBT.println("ADD_NOTE <message> - Add a note to the logs");
-    SerialBT.println("CURRENT_CONFIG - Show all settings");
-    SerialBT.println("SET_TAP 1 or SET_TAP 2 - Single or Double Tap Detection");
-    SerialBT.println("SET_SENSITIVITY <1-127> - Set tap sensitivity");
-    SerialBT.println("READ_TEMP - Show internal ESP32 temperature");
+    pTxCharacteristic->setValue("Commands:");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("SHOW_LOGS - Display log entries");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("CLEAR_LOGS - Clear all logs");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("SYNC_TIME - Sync system time from RTC");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("SET_RTC YYYY-MM-DD HH:MM:SS - Set RTC time");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("SET_NAME NewName");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("SET_LINE_COUNT <number>");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("ADD_NOTE <message> - Add a note to the logs");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("CURRENT_CONFIG - Show all settings");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("SET_TAP 1 or SET_TAP 2 - Single or Double Tap Detection");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("SET_SENSITIVITY <1-127> - Set tap sensitivity");
+pTxCharacteristic->notify();
+    pTxCharacteristic->setValue("READ_TEMP - Show internal ESP32 temperature");
+pTxCharacteristic->notify();
 
   }
 
-  else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
+else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
     File logFile = SPIFFS.open(logFilePath, FILE_READ);
     if (!logFile || logFile.size() == 0) {
-      SerialBT.println("No logs found.");
+        pTxCharacteristic->setValue("No logs found.");
+        pTxCharacteristic->notify();
     } else {
-      while (logFile.available()) {
-        SerialBT.write(logFile.read());
-      }
+        String bleBuffer = "";
+        while (logFile.available()) {
+            char c = logFile.read();
+            bleBuffer += c;
+            // BLE notification size limit (20 bytes is safe for most clients)
+            if (bleBuffer.length() >= 20) {
+                pTxCharacteristic->setValue(bleBuffer.c_str());
+                pTxCharacteristic->notify();
+                bleBuffer = "";
+                delay(10); // Give BLE stack time to transmit
+            }
+        }
+        // Send any remaining data
+        if (bleBuffer.length() > 0) {
+            pTxCharacteristic->setValue(bleBuffer.c_str());
+            pTxCharacteristic->notify();
+        }
     }
     logFile.close();
-  }
+}
 
   else if (cmd.equalsIgnoreCase("CLEAR_LOGS")) {
     SPIFFS.remove(logFilePath);
-    SerialBT.println("Logs cleared.");
+    pTxCharacteristic->setValue("Logs cleared.");
+pTxCharacteristic->notify();
   }
 
   else if (cmd.equalsIgnoreCase("SYNC_TIME")) {
     syncSystemTimeWithRTC();
-    SerialBT.println("System time synced with RTC.");
+    pTxCharacteristic->setValue("System time synced with RTC.");
+pTxCharacteristic->notify();
   }
 
   else if (cmd.startsWith("SET_RTC")) {
     String dateTime = cmd.substring(8);
     dateTime.trim();
     if (dateTime.length() < 19) {
-      SerialBT.println("Invalid format. Use: SET_RTC YYYY-MM-DD HH:MM:SS");
+      pTxCharacteristic->setValue("Invalid format. Use: SET_RTC YYYY-MM-DD HH:MM:SS");
+pTxCharacteristic->notify();
       return;
     }
     // Now check if the characters in important places are correct
   if (dateTime.charAt(4) != '-' || dateTime.charAt(7) != '-' || dateTime.charAt(10) != ' ' ||
       dateTime.charAt(13) != ':' || dateTime.charAt(16) != ':') {
-    SerialBT.println("Invalid format. Use: SET_RTC YYYY-MM-DD HH:MM:SS");
+    pTxCharacteristic->setValue("Invalid format. Use: SET_RTC YYYY-MM-DD HH:MM:SS");
+pTxCharacteristic->notify();
     return;
   }
     int year = dateTime.substring(0, 4).toInt();
@@ -240,7 +285,8 @@ void processCommand(String cmd) {
     int minute = dateTime.substring(14, 16).toInt();
     int second = dateTime.substring(17, 19).toInt();
     rtc.adjust(DateTime(year, month, day, hour, minute, second));
-    SerialBT.println("RTC updated.");
+    pTxCharacteristic->setValue("RTC updated.");
+pTxCharacteristic->notify();
     Serial.printf("RTC set to: %04d-%02d-%02d %02d:%02d:%02d\n", year, month, day, hour, minute, second);
   }
 
@@ -250,14 +296,16 @@ void processCommand(String cmd) {
     sprintf(rtcTime, "%04d-%02d-%02d %02d:%02d:%02d",
             now.year(), now.month(), now.day(),
             now.hour(), now.minute(), now.second());
-    SerialBT.println("RTC Time: " + String(rtcTime));
+    pTxCharacteristic->setValue("RTC Time: " + String(rtcTime));
+pTxCharacteristic->notify();
   }
 
   else if (cmd.startsWith("SET_NAME")) {
     String newName = cmd.substring(8);
     newName.trim();
     if (newName.length() == 0) {
-      SerialBT.println("Name cannot be empty.");
+      pTxCharacteristic->setValue("Name cannot be empty.");
+pTxCharacteristic->notify();
       return;
     }
 
@@ -269,19 +317,22 @@ void processCommand(String cmd) {
     updateLogFilePath();
     saveConfig();
 
-    SerialBT.println("Trap name updated to: " + config.trapName);
+    pTxCharacteristic->setValue("Trap name updated to: " + config.trapName);
+pTxCharacteristic->notify();
   }
 
 
   else if (cmd.startsWith("SET_LINE_COUNT")) {
     int newCount = cmd.substring(15).toInt();
     if (newCount <= 0) {
-      SerialBT.println("Line count must be positive.");
+      pTxCharacteristic->setValue("Line count must be positive.");
+pTxCharacteristic->notify();
       return;
     }
     config.lineCount = newCount;
     saveConfig();
-    SerialBT.println("Line count set to: " + String(newCount));
+    pTxCharacteristic->setValue("Line count set to: " + String(newCount));
+pTxCharacteristic->notify();
   }
     
   else if (cmd.startsWith("ADD_NOTE")) {    // Add new "ADD_NOTE" command
@@ -289,31 +340,39 @@ void processCommand(String cmd) {
     noteMessage.trim();
 
     if (noteMessage.length() == 0) {
-      SerialBT.println("Please provide a message for the note.");
+      pTxCharacteristic->setValue("Please provide a message for the note.");
+pTxCharacteristic->notify();
       return;
     }
 
     logEvent("NOTE " + noteMessage);  // Log the note with a timestamp
-    SerialBT.println("Note added: " + noteMessage);
+    pTxCharacteristic->setValue("Note added: " + noteMessage);
+pTxCharacteristic->notify();
   }
 
 else if (cmd.equalsIgnoreCase("CURRENT_CONFIG")) {
-  SerialBT.println("===== Current Configuration =====");
+  pTxCharacteristic->setValue("your string\n");
+pTxCharacteristic->notify();("===== Current Configuration =====");
 
-  SerialBT.println("Trap Name: " + config.trapName);
+  pTxCharacteristic->setValue("Trap Name: " + config.trapName);
 
+pTxCharacteristic->notify();
   DateTime now = rtc.now();
   char rtcTime[30];
   sprintf(rtcTime, "%04d-%02d-%02d %02d:%02d:%02d",
           now.year(), now.month(), now.day(),
           now.hour(), now.minute(), now.second());
-  SerialBT.println("RTC Time: " + String(rtcTime));
+  pTxCharacteristic->setValue("RTC Time: " + String(rtcTime));
+pTxCharacteristic->notify();
 
-  SerialBT.println("Max Log Lines: " + String(config.lineCount));
+  pTxCharacteristic->setValue("Max Log Lines: " + String(config.lineCount));
+pTxCharacteristic->notify();
 
 
-  SerialBT.println("Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap"));
-  SerialBT.println("Tap Sensitivity: " + String(config.sensitivity));
+  pTxCharacteristic->setValue("Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap"));
+pTxCharacteristic->notify();
+  pTxCharacteristic->setValue("Tap Sensitivity: " + String(config.sensitivity));
+pTxCharacteristic->notify();
 }
 
 
@@ -328,10 +387,12 @@ else if (cmd.startsWith("SET_TAP")) {
             lis.setClick(tapCount, sensitivity);  // re-apply settings to sensor
             saveConfig();
             Serial.println("Tap limit updated to " + String(tapCount));
-            SerialBT.println("Tap limit updated to " + String(tapCount));
+            pTxCharacteristic->setValue("Tap limit updated to " + String(tapCount));
+pTxCharacteristic->notify();
         } else {
             Serial.println("Invalid tap limit. Must be 1 or 2.");
-            SerialBT.println("Invalid tap limit. Must be 1 or 2.");
+            pTxCharacteristic->setValue("Invalid tap limit. Must be 1 or 2.");
+pTxCharacteristic->notify();
         }
     } else {
         Serial.println("No value provided for SET_TAP");
@@ -349,24 +410,36 @@ else if (cmd.startsWith("SET_SENSITIVITY")) {
             lis.setClick(tapCount, sensitivity);  // re-apply settings to sensor
             saveConfig();
             Serial.println("Sensitivity updated to " + String(sensitivity));
-            SerialBT.println("Sensitivity updated to " + String(sensitivity));
+            pTxCharacteristic->setValue("Sensitivity updated to " + String(sensitivity));
+pTxCharacteristic->notify();
         } else {
             Serial.println("Invalid sensitivity. Must be 1-127.");
-            SerialBT.println("Invalid sensitivity. Must be 1-127.");
+            pTxCharacteristic->setValue("Invalid sensitivity. Must be 1-127.");
+pTxCharacteristic->notify();
         }
     } else {
         Serial.println("No value provided for SET_SENSITIVITY");
     }
 }
 
- else if (cmd.equalsIgnoreCase("READ_TEMP")) {
-  float tempC = getInternalTemperature();
-  SerialBT.printf("Internal Temperature: %.2f C\n", tempC);
-  Serial.printf("Internal Temperature: %.2f C\n", tempC);
+else if (cmd.equalsIgnoreCase("READ_TEMP")) {
+    float tempC = getInternalTemperature();
+
+    // Format the temperature string
+    char tempMsg[40];
+    snprintf(tempMsg, sizeof(tempMsg), "Internal Temperature: %.2f C\n", tempC);
+
+    // Send over BLE
+    pTxCharacteristic->setValue(tempMsg);
+    pTxCharacteristic->notify();
+
+    // Also print to serial monitor (for debugging)
+    Serial.printf("Internal Temperature: %.2f C\n", tempC);
 }
 
   else {
-    SerialBT.println("Unknown command. Type HELP for list.");
+    pTxCharacteristic->setValue("Unknown command. Type HELP for list.");
+pTxCharacteristic->notify();
   }
 
  
