@@ -85,14 +85,18 @@ void loadSettings();
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("Minimal code");
+  Serial.println("Debug code");
 
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
   //pinMode(buttonPin, INPUT_PULLUP);
   digitalWrite(ledPin, LOW);
 
-  NimBLEDevice::init("MyTrapLogger");  // BLE device name
+  loadConfig();
+  Serial.print("Loaded Trap Name: ");
+  Serial.println(config.trapName);
+
+  NimBLEDevice::init("TrapLogger");  // BLE device name
   Serial.println("Bluetooth ready. Connect to: TrapLogger");
   NimBLEServer* pServer = NimBLEDevice::createServer();
   NimBLEService* pService = pServer->createService(UART_SERVICE_UUID);
@@ -125,7 +129,9 @@ Serial.println(SPIFFS.usedBytes());
   }
   Serial.println("RTC found!");
 
-  loadConfig();
+ // loadConfig();
+ // Serial.print("Loaded Trap Name: ");
+ // Serial.println(config.trapName);
   updateLogFilePath();
   syncSystemTimeWithRTC();
 
