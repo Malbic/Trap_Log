@@ -8,6 +8,8 @@
 // ==========================================
 
 #include <NimBLEDevice.h>
+
+#include <NimBLEDevice.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include <RTClib.h>
@@ -23,11 +25,15 @@
 
 NimBLECharacteristic* pTxCharacteristic;
 
+void processCommand(String cmd);
+
 class UARTServerCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* pCharacteristic) {
+void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) {
     std::string rxValue = pCharacteristic->getValue();
-    // Handle incoming BLE UART data in rxValue
-    // For example, call your processCommand() with rxValue
+    if (!rxValue.empty()) {
+      String cmd = String(rxValue.c_str());
+      processCommand(cmd);  
+    }
   }
 };
 
@@ -42,7 +48,7 @@ const unsigned long debounceDelay = 50;
 
 RTC_DS3231 rtc;
 Adafruit_LIS3DH lis = Adafruit_LIS3DH();
-int tapCount = 2;      // Default value, can be 1 or 2 as you said
+int tapCount = 2;      // Default value, can be 1 or 2
 int sensitivity = 20;  // default value, can be 1 to 200
 
 
@@ -59,10 +65,6 @@ struct Config {
 const char* configFilePath = "/config.json";
 String logFilePath;
 
-// ====== BUTTON STATE ======
-bool lastStableState = HIGH;
-bool lastReadState = HIGH;
-unsigned long lastDebounceTime = 0;
 
 // ====== BLUETOOTH COMMAND BUFFER ======
 String inputBuffer = "";
@@ -70,7 +72,7 @@ String inputBuffer = "";
 // ====== FUNCTION DECLARATIONS ======
 void knockISR();
 void syncSystemTimeWithRTC();
-void processCommand(String cmd);
+
 void loadConfig();
 void saveConfig();
 void updateLogFilePath();
@@ -87,9 +89,16 @@ void setup() {
   delay(1000);
   Serial.println("Debug code");
 
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS Mount Failed!");
+  }
+  Serial.print("Total SPIFFS: ");
+  Serial.println(SPIFFS.totalBytes());
+  Serial.print("Used SPIFFS: ");
+  Serial.println(SPIFFS.usedBytes());
+
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
-  //pinMode(buttonPin, INPUT_PULLUP);
   digitalWrite(ledPin, LOW);
 
   loadConfig();
@@ -113,9 +122,6 @@ void setup() {
   pService->start();
   NimBLEDevice::startAdvertising();
 
-  if (!SPIFFS.begin(true)) {
-    Serial.println("SPIFFS Mount Failed!");
-  }
   Serial.print("Total SPIFFS: ");
 Serial.println(SPIFFS.totalBytes());
 Serial.print("Used SPIFFS: ");
@@ -129,9 +135,9 @@ Serial.println(SPIFFS.usedBytes());
   }
   Serial.println("RTC found!");
 
- // loadConfig();
- // Serial.print("Loaded Trap Name: ");
- // Serial.println(config.trapName);
+  loadConfig();
+  Serial.print("Loaded Trap Name: ");
+  Serial.println(config.trapName);
   updateLogFilePath();
   syncSystemTimeWithRTC();
 
@@ -171,14 +177,17 @@ void loop() {
     knockDetected = false;
 
     Serial.println("Knock detected!");
-   // logEvent("KNOCK DETECTED");
+    logEvent("KNOCK DETECTED");
+
+  if (pTxCharacteristic) { 
     pTxCharacteristic->setValue("Knock detected! Event logged.");
-pTxCharacteristic->notify();
+    pTxCharacteristic->notify();
 
     digitalWrite(ledPin, HIGH);
     delay(200);
     digitalWrite(ledPin, LOW);
-  } 
+    } 
+  }
 }
 
 // ====== SYNC SYSTEM TIME FROM RTC ======
@@ -199,9 +208,6 @@ void syncSystemTimeWithRTC() {
 
   Serial.println("System time synced with RTC.");
 }
-
-
-
 
 void processCommand(String cmd) {
   cmd.trim();
@@ -528,15 +534,17 @@ void updateLogFilePath() {
   logFilePath = "/" + config.trapName + "_logs.txt";
 }
 
-// ====== LOGGING FUNCTION ======
+ // ====== LOGGING FUNCTION ======
 void logEvent(String message) {
+    Serial.println("logEvent called with msg: " + message);
+
 
   File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
   if (!logFile) {
     Serial.println("Failed to open log file");
     return;
   }
-
+/*
   DateTime now = rtc.now();
   float tempC = rtc.getTemperature();  // Read DS3231 temperature
 
@@ -548,9 +556,10 @@ void logEvent(String message) {
   logFile.printf("%s - %s - %s - Temp: %.2f C\n", config.trapName.c_str(), timeStr, message.c_str(), tempC);
   logFile.close();
   Serial.printf("Logged: %s - %s - Temp: %.2f C\n", message.c_str(), tempC);
-
+*/
   // Enforce log limit
   enforceLogLimit();
+  
 }
 
 // ====== LOG LIMIT ENFORCEMENT ======
