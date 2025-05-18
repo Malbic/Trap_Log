@@ -15,35 +15,35 @@
 #include <ArduinoJson.h>
 #include <Adafruit_LIS3DH.h>
 #include <Adafruit_Sensor.h>
-#include <NimBLEDevice.h>
 
-#define UART_SERVICE_UUID        "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-#define UART_CHAR_RX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
-#define UART_CHAR_TX_UUID       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+
+#define UART_SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define UART_CHAR_RX_UUID "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+#define UART_CHAR_TX_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 
 NimBLECharacteristic* pTxCharacteristic;
 
 class UARTServerCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* pCharacteristic) {
-        std::string rxValue = pCharacteristic->getValue();
-        // Handle incoming BLE UART data in rxValue
-        // For example, call your processCommand() with rxValue
-    }
+  void onWrite(NimBLECharacteristic* pCharacteristic) {
+    std::string rxValue = pCharacteristic->getValue();
+    // Handle incoming BLE UART data in rxValue
+    // For example, call your processCommand() with rxValue
+  }
 };
 
 
 // ====== CONSTANTS ======
-const int lisIntPin = 13; // LIS3DH INT1 connected to GPIO13
-const int ledPin = 2;     // Onboard LED (typically GPIO2)
-const int buttonPin = 12;
+const int lisIntPin = 3;  // LIS3DH INT1 connected to GPIO3
+const int ledPin = 8;     // Onboard LED (typically GPIO8)
+//const int buttonPin = 12;
 const unsigned long debounceDelay = 50;
 
 // ====== GLOBAL OBJECTS ======
 
 RTC_DS3231 rtc;
 Adafruit_LIS3DH lis = Adafruit_LIS3DH();
-int tapCount = 2;  // Default value, can be 1 or 2 as you said
-int sensitivity = 20;    // default value, can be 1 to 200
+int tapCount = 2;      // Default value, can be 1 or 2 as you said
+int sensitivity = 20;  // default value, can be 1 to 200
 
 
 // ====== FLAGS ======
@@ -55,8 +55,7 @@ struct Config {
   int lineCount = 30;
   int tapCount;     // Add this line for tapCount
   int sensitivity;  // Add this line for sensitivity
-} //config;
-config;  // Declare an instance of the Config struct
+}  config;  // Declare an instance of the Config struct
 const char* configFilePath = "/config.json";
 String logFilePath;
 
@@ -80,42 +79,43 @@ void loadSettings();
 
 //float temperature = rtc.getTemperature();
 
-float getInternalTemperature() {
-  return temperatureRead();  // ESP32's internal temp in °C (approximate)
-}
 
 
 // ====== SETUP ======
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+  Serial.println("Minimal code");
 
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
-  pinMode(buttonPin, INPUT_PULLUP);
+  //pinMode(buttonPin, INPUT_PULLUP);
   digitalWrite(ledPin, LOW);
 
-     NimBLEDevice::init("TrapLogger"); // BLE device name
+  NimBLEDevice::init("MyTrapLogger");  // BLE device name
   Serial.println("Bluetooth ready. Connect to: TrapLogger");
-      NimBLEServer* pServer = NimBLEDevice::createServer();
-    NimBLEService* pService = pServer->createService(UART_SERVICE_UUID);
+  NimBLEServer* pServer = NimBLEDevice::createServer();
+  NimBLEService* pService = pServer->createService(UART_SERVICE_UUID);
 
-    NimBLECharacteristic* pRxCharacteristic = pService->createCharacteristic(
-        UART_CHAR_RX_UUID,
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
-    );
-    pRxCharacteristic->setCallbacks(new UARTServerCallbacks());
+  NimBLECharacteristic* pRxCharacteristic = pService->createCharacteristic(
+    UART_CHAR_RX_UUID,
+    NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  pRxCharacteristic->setCallbacks(new UARTServerCallbacks());
 
-    pTxCharacteristic = pService->createCharacteristic(
-        UART_CHAR_TX_UUID,
-        NIMBLE_PROPERTY::NOTIFY
-    );
+  pTxCharacteristic = pService->createCharacteristic(
+    UART_CHAR_TX_UUID,
+    NIMBLE_PROPERTY::NOTIFY);
 
-    pService->start();
-    NimBLEDevice::startAdvertising();
+  pService->start();
+  NimBLEDevice::startAdvertising();
 
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS Mount Failed!");
   }
+  Serial.print("Total SPIFFS: ");
+Serial.println(SPIFFS.totalBytes());
+Serial.print("Used SPIFFS: ");
+Serial.println(SPIFFS.usedBytes());
 
   Wire.begin();
   if (!rtc.begin()) {
@@ -123,25 +123,26 @@ void setup() {
   } else if (rtc.lostPower()) {
     Serial.println("RTC lost power, needs sync.");
   }
+  Serial.println("RTC found!");
 
   loadConfig();
   updateLogFilePath();
   syncSystemTimeWithRTC();
 
-  if (!lis.begin(0x19)) { // 0x18 is the LIS3DH I2C address
+  if (!lis.begin(0x19)) {  // 0x18 is the LIS3DH I2C address
     Serial.println("Could not start LIS3DH!");
     while (1);
   }
   Serial.println("LIS3DH found!");
   lis.setRange(LIS3DH_RANGE_2_G);
   loadSettings();
-  lis.setClick(tapCount, sensitivity); // Double tap detection
+  lis.setClick(tapCount, sensitivity);  // Double tap detection
 
   attachInterrupt(digitalPinToInterrupt(lisIntPin), knockISR, FALLING);
-Wire.beginTransmission(0x19); // Your sensor address (you said you changed it to 0x19)
-Wire.write(0x22);             // CTRL_REG3 address
-Wire.write(0x80);             // Set CLICK interrupt on INT1
-Wire.endTransmission();
+  Wire.beginTransmission(0x19);  // Your sensor address (you said you changed it to 0x19)
+  Wire.write(0x22);              // CTRL_REG3 address
+  Wire.write(0x80);              // Set CLICK interrupt on INT1
+  Wire.endTransmission();
 
   float tempC = rtc.getTemperature();
   Serial.print("Ambient Temp (DS3231): ");
@@ -154,13 +155,17 @@ void IRAM_ATTR knockISR() {
   knockDetected = true;
 }
 
+
+
 // ====== MAIN LOOP ======
+
+
 void loop() {
   if (knockDetected) {
     knockDetected = false;
 
     Serial.println("Knock detected!");
-    logEvent("KNOCK DETECTED");
+   // logEvent("KNOCK DETECTED");
     pTxCharacteristic->setValue("Knock detected! Event logged.");
 pTxCharacteristic->notify();
 
@@ -421,7 +426,7 @@ pTxCharacteristic->notify();
         Serial.println("No value provided for SET_SENSITIVITY");
     }
 }
-
+/*
 else if (cmd.equalsIgnoreCase("READ_TEMP")) {
     float tempC = getInternalTemperature();
 
@@ -436,7 +441,7 @@ else if (cmd.equalsIgnoreCase("READ_TEMP")) {
     // Also print to serial monitor (for debugging)
     Serial.printf("Internal Temperature: %.2f C\n", tempC);
 }
-
+*/
   else {
     pTxCharacteristic->setValue("Unknown command. Type HELP for list.");
 pTxCharacteristic->notify();
@@ -519,6 +524,7 @@ void updateLogFilePath() {
 
 // ====== LOGGING FUNCTION ======
 void logEvent(String message) {
+
   File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
   if (!logFile) {
     Serial.println("Failed to open log file");
