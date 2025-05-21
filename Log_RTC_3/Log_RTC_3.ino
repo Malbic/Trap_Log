@@ -8,8 +8,6 @@
 // ==========================================
 
 #include <NimBLEDevice.h>
-
-#include <NimBLEDevice.h>
 #include <FS.h>
 #include <SPIFFS.h>
 #include <RTClib.h>
@@ -41,7 +39,6 @@ void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) {
 // ====== CONSTANTS ======
 const int lisIntPin = 3;  // LIS3DH INT1 connected to GPIO3
 const int ledPin = 8;     // Onboard LED (typically GPIO8)
-//const int buttonPin = 12;
 const unsigned long debounceDelay = 50;
 
 // ====== GLOBAL OBJECTS ======
@@ -78,9 +75,6 @@ void saveConfig();
 void updateLogFilePath();
 void logEvent(String message);
 void loadSettings();
-
-//float temperature = rtc.getTemperature();
-
 
 
 // ====== SETUP ======
@@ -156,10 +150,10 @@ Serial.println(SPIFFS.usedBytes());
   Wire.write(0x80);              // Set CLICK interrupt on INT1
   Wire.endTransmission();
 
-  float tempC = rtc.getTemperature();
-  Serial.print("Ambient Temp (DS3231): ");
-  Serial.print(tempC);
-  Serial.println(" °C");
+  //float tempC = rtc.getTemperature();
+  //Serial.print("Ambient Temp (DS3231): ");
+  //Serial.print(tempC);
+  //Serial.println(" °C");
 }
 
 // ====== INTERRUPT SERVICE ROUTINE ======
@@ -236,8 +230,8 @@ pTxCharacteristic->notify();
 pTxCharacteristic->notify();
     pTxCharacteristic->setValue("SET_SENSITIVITY <1-127> - Set tap sensitivity");
 pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("READ_TEMP - Show internal ESP32 temperature");
-pTxCharacteristic->notify();
+ //   pTxCharacteristic->setValue("READ_TEMP - Show internal ESP32 temperature");
+//pTxCharacteristic->notify();
 
   }
 
@@ -369,25 +363,32 @@ pTxCharacteristic->notify();
 
 else if (cmd.equalsIgnoreCase("CURRENT_CONFIG")) {
   pTxCharacteristic->setValue("your string\n");
-pTxCharacteristic->notify();("===== Current Configuration =====");
+  pTxCharacteristic->notify();("===== Current Configuration =====");
 
   pTxCharacteristic->setValue("Trap Name: " + config.trapName);
+  pTxCharacteristic->notify();
 
-pTxCharacteristic->notify();
   DateTime now = rtc.now();
   char rtcTime[30];
   sprintf(rtcTime, "%04d-%02d-%02d %02d:%02d:%02d",
           now.year(), now.month(), now.day(),
           now.hour(), now.minute(), now.second());
   pTxCharacteristic->setValue("RTC Time: " + String(rtcTime));
-pTxCharacteristic->notify();
+  pTxCharacteristic->notify();
+
+      // Only call getTemperature() here, safely
+    float tempC = rtc.getTemperature();
+    char tempMsg[40];
+    snprintf(tempMsg, sizeof(tempMsg), "DS3231 Temp: %.2f C", tempC);
+    pTxCharacteristic->setValue(tempMsg);
+    pTxCharacteristic->notify();
 
   pTxCharacteristic->setValue("Max Log Lines: " + String(config.lineCount));
-pTxCharacteristic->notify();
+  pTxCharacteristic->notify();
 
 
   pTxCharacteristic->setValue("Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap"));
-pTxCharacteristic->notify();
+  pTxCharacteristic->notify();
   pTxCharacteristic->setValue("Tap Sensitivity: " + String(config.sensitivity));
 pTxCharacteristic->notify();
 }
@@ -438,22 +439,7 @@ pTxCharacteristic->notify();
         Serial.println("No value provided for SET_SENSITIVITY");
     }
 }
-/*
-else if (cmd.equalsIgnoreCase("READ_TEMP")) {
-    float tempC = getInternalTemperature();
 
-    // Format the temperature string
-    char tempMsg[40];
-    snprintf(tempMsg, sizeof(tempMsg), "Internal Temperature: %.2f C\n", tempC);
-
-    // Send over BLE
-    pTxCharacteristic->setValue(tempMsg);
-    pTxCharacteristic->notify();
-
-    // Also print to serial monitor (for debugging)
-    Serial.printf("Internal Temperature: %.2f C\n", tempC);
-}
-*/
   else {
     pTxCharacteristic->setValue("Unknown command. Type HELP for list.");
 pTxCharacteristic->notify();
@@ -630,4 +616,5 @@ void loadSettings() {
     Serial.println("Failed to open config file for reading.");
   }
 }
+
 
