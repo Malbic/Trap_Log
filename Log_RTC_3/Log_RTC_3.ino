@@ -20,6 +20,8 @@
 #define UART_SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define UART_CHAR_RX_UUID "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define UART_CHAR_TX_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define KNOCK_IGNORE_TIME 2000  // 2 seconds (adjust as needed)
+unsigned long knockIgnoreUntil = 0;
 
 NimBLECharacteristic* pTxCharacteristic;
 
@@ -82,22 +84,23 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("Debug code");
+  knockIgnoreUntil = millis() + KNOCK_IGNORE_TIME;
 
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS Mount Failed!");
   }
-  Serial.print("Total SPIFFS: ");
-  Serial.println(SPIFFS.totalBytes());
-  Serial.print("Used SPIFFS: ");
-  Serial.println(SPIFFS.usedBytes());
+ // Serial.print("Total SPIFFS: ");
+ // Serial.println(SPIFFS.totalBytes());
+ // Serial.print("Used SPIFFS: ");
+ // Serial.println(SPIFFS.usedBytes());
 
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, LOW);
 
-  loadConfig();
-  Serial.print("Loaded Trap Name: ");
-  Serial.println(config.trapName);
+  //loadConfig();
+  //Serial.print("Loaded Trap Name: ");
+  //Serial.println(config.trapName);
 
   NimBLEDevice::init("TrapLogger");  // BLE device name
   Serial.println("Bluetooth ready. Connect to: TrapLogger");
@@ -117,9 +120,9 @@ void setup() {
   NimBLEDevice::startAdvertising();
 
   Serial.print("Total SPIFFS: ");
-Serial.println(SPIFFS.totalBytes());
-Serial.print("Used SPIFFS: ");
-Serial.println(SPIFFS.usedBytes());
+  Serial.println(SPIFFS.totalBytes());
+  Serial.print("Used SPIFFS: ");
+  Serial.println(SPIFFS.usedBytes());
 
   Wire.begin();
   if (!rtc.begin()) {
@@ -145,15 +148,15 @@ Serial.println(SPIFFS.usedBytes());
   lis.setClick(tapCount, sensitivity);  // Double tap detection
 
   attachInterrupt(digitalPinToInterrupt(lisIntPin), knockISR, FALLING);
-  Wire.beginTransmission(0x19);  // Your sensor address (you said you changed it to 0x19)
+  Wire.beginTransmission(0x19);  // Your sensor address (0x18 or 0x19)
   Wire.write(0x22);              // CTRL_REG3 address
   Wire.write(0x80);              // Set CLICK interrupt on INT1
   Wire.endTransmission();
 
-  //float tempC = rtc.getTemperature();
-  //Serial.print("Ambient Temp (DS3231): ");
-  //Serial.print(tempC);
-  //Serial.println(" °C");
+  float tempC = rtc.getTemperature();
+  Serial.print("Ambient Temp (DS3231): ");
+  Serial.print(tempC);
+  Serial.println(" °C");
 }
 
 // ====== INTERRUPT SERVICE ROUTINE ======
@@ -167,19 +170,25 @@ void IRAM_ATTR knockISR() {
 
 
 void loop() {
-  if (knockDetected) {
+ if (knockDetected) {
     knockDetected = false;
-
-    Serial.println("Knock detected!");
     logEvent("KNOCK DETECTED");
 
-  if (pTxCharacteristic) { 
-    pTxCharacteristic->setValue("Knock detected! Event logged.");
-    pTxCharacteristic->notify();
+    if (pTxCharacteristic) { 
+        // Get timestamp and temperature for the BLE message
+        DateTime now = rtc.now();
+        float tempC = rtc.getTemperature();
+        char bleMsg[40];
+        snprintf(bleMsg, sizeof(bleMsg), "Knock! %04d-%02d-%02d %02d:%02d:%02d Temp: %.1f C\n",
+            now.year(), now.month(), now.day(),
+            now.hour(), now.minute(), now.second(), tempC);
 
-    digitalWrite(ledPin, HIGH);
-    delay(200);
-    digitalWrite(ledPin, LOW);
+        pTxCharacteristic->setValue(bleMsg);
+        pTxCharacteristic->notify();
+
+        digitalWrite(ledPin, HIGH);
+        delay(200);
+        digitalWrite(ledPin, LOW);
     } 
   }
 }
@@ -207,34 +216,25 @@ void processCommand(String cmd) {
   cmd.trim();
   Serial.println("Command: " + cmd);
 
-  if (cmd.equalsIgnoreCase("HELP")) {
-    pTxCharacteristic->setValue("Commands:");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("SHOW_LOGS - Display log entries");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("CLEAR_LOGS - Clear all logs");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("SYNC_TIME - Sync system time from RTC");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("SET_RTC YYYY-MM-DD HH:MM:SS - Set RTC time");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("SET_NAME NewName");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("SET_LINE_COUNT <number>");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("ADD_NOTE <message> - Add a note to the logs");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("CURRENT_CONFIG - Show all settings");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("SET_TAP 1 or SET_TAP 2 - Single or Double Tap Detection");
-pTxCharacteristic->notify();
-    pTxCharacteristic->setValue("SET_SENSITIVITY <1-127> - Set tap sensitivity");
-pTxCharacteristic->notify();
- //   pTxCharacteristic->setValue("READ_TEMP - Show internal ESP32 temperature");
-//pTxCharacteristic->notify();
 
-  }
-
+if (cmd.equalsIgnoreCase("HELP")) {
+  String helpText =
+    "Commands:\n"
+    "SHOW_LOGS \n"
+    "CLEAR_LOGS \n"
+    "SET_RTC YYYY-MM-DD HH:MM:SS \n"
+    "SYNC_TIME - with RTC\n"
+    "SET_NAME \n"
+    "SET_LINE_COUNT <number>\n"
+    "ADD_NOTE <message>\n"
+    "CURRENT_CONFIG \n"
+    "SET_TAP 1 or SET_TAP 2 \n"
+    "SET_SENSITIVITY <1-127>  \n";
+  pTxCharacteristic->setValue(helpText.c_str());
+  pTxCharacteristic->notify();
+}
+  
+/*
 else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
     File logFile = SPIFFS.open(logFilePath, FILE_READ);
     if (!logFile || logFile.size() == 0) {
@@ -258,6 +258,68 @@ else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
             pTxCharacteristic->setValue(bleBuffer.c_str());
             pTxCharacteristic->notify();
         }
+    }
+    logFile.close();
+}
+
+else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
+    File logFile = SPIFFS.open(logFilePath, FILE_READ);
+    if (!logFile || logFile.size() == 0) {
+        pTxCharacteristic->setValue("No logs found.");
+        pTxCharacteristic->notify();
+    } else {
+        String bleBuffer = "";
+        const int chunkSize = 50; // or up to your negotiated MTU
+        while (logFile.available()) {
+            char c = logFile.read();
+            bleBuffer += c;
+            if (bleBuffer.length() >= chunkSize) {
+                pTxCharacteristic->setValue(bleBuffer.c_str());
+                pTxCharacteristic->notify();
+                bleBuffer = "";
+                delay(20); // give time for BLE stack
+            }
+        }
+        // Send any remaining data
+        if (bleBuffer.length() > 0) {
+            pTxCharacteristic->setValue(bleBuffer.c_str());
+            pTxCharacteristic->notify();
+        }
+    }
+    logFile.close();
+}
+*/
+else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
+    File logFile = SPIFFS.open(logFilePath, FILE_READ);
+    if (!logFile || logFile.size() == 0) {
+        pTxCharacteristic->setValue("No logs found.");
+        pTxCharacteristic->notify();
+    } else {
+        // Notify start of transmission
+        pTxCharacteristic->setValue("LOGS_START");
+        pTxCharacteristic->notify();
+        delay(20);
+
+        // Send each log line separately, or buffer multiple lines if they fit
+        String line;
+        while (logFile.available()) {
+            line = logFile.readStringUntil('\n');
+            line.trim(); // remove any trailing newline or whitespace
+            if (line.length() > 0) {
+                // If line is longer than 20 bytes, split it further!
+                int startIdx = 0;
+                while (startIdx < line.length()) {
+                    String chunk = line.substring(startIdx, startIdx + 20);
+                    pTxCharacteristic->setValue(chunk.c_str());
+                    pTxCharacteristic->notify();
+                    delay(20); // 20ms delay between notifications
+                    startIdx += 20;
+                }
+            }
+        }
+        // Notify end of transmission
+        pTxCharacteristic->setValue("LOGS_END");
+        pTxCharacteristic->notify();
     }
     logFile.close();
 }
@@ -361,38 +423,28 @@ pTxCharacteristic->notify();
 pTxCharacteristic->notify();
   }
 
+
+
 else if (cmd.equalsIgnoreCase("CURRENT_CONFIG")) {
-  pTxCharacteristic->setValue("your string\n");
-  pTxCharacteristic->notify();("===== Current Configuration =====");
-
-  pTxCharacteristic->setValue("Trap Name: " + config.trapName);
-  pTxCharacteristic->notify();
-
   DateTime now = rtc.now();
   char rtcTime[30];
   sprintf(rtcTime, "%04d-%02d-%02d %02d:%02d:%02d",
           now.year(), now.month(), now.day(),
           now.hour(), now.minute(), now.second());
-  pTxCharacteristic->setValue("RTC Time: " + String(rtcTime));
+  float tempC = rtc.getTemperature();
+
+  String configText =
+    "===== Current Configuration =====\n"
+    "Trap Name: " + config.trapName + "\n" +
+    "RTC Time: " + String(rtcTime) + "\n" +
+    "DS3231 Temp: " + String(tempC, 2) + " C\n" +
+    "Max Log Lines: " + String(config.lineCount) + "\n" +
+    "Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap") + "\n" +
+    "Tap Sensitivity: " + String(config.sensitivity);
+
+  pTxCharacteristic->setValue(configText.c_str());
   pTxCharacteristic->notify();
-
-      // Only call getTemperature() here, safely
-    float tempC = rtc.getTemperature();
-    char tempMsg[40];
-    snprintf(tempMsg, sizeof(tempMsg), "DS3231 Temp: %.2f C", tempC);
-    pTxCharacteristic->setValue(tempMsg);
-    pTxCharacteristic->notify();
-
-  pTxCharacteristic->setValue("Max Log Lines: " + String(config.lineCount));
-  pTxCharacteristic->notify();
-
-
-  pTxCharacteristic->setValue("Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap"));
-  pTxCharacteristic->notify();
-  pTxCharacteristic->setValue("Tap Sensitivity: " + String(config.sensitivity));
-pTxCharacteristic->notify();
 }
-
 
 else if (cmd.startsWith("SET_TAP")) {
     int spaceIndex = cmd.indexOf(' ');
@@ -444,10 +496,8 @@ pTxCharacteristic->notify();
     pTxCharacteristic->setValue("Unknown command. Type HELP for list.");
 pTxCharacteristic->notify();
   }
-
- 
-
 }
+
 void handleCommand(String cmd) {
   if (cmd.startsWith("SET_TAP")) {
     // Example: SET_TAP 1 or SET_TAP 2
@@ -522,30 +572,28 @@ void updateLogFilePath() {
 
  // ====== LOGGING FUNCTION ======
 void logEvent(String message) {
-    Serial.println("logEvent called with msg: " + message);
+   // Serial.println("logEvent called with msg: " + message);
 
+    File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
+    if (!logFile) {
+        Serial.println("Failed to open log file");
+        return;
+    }
+ 
+    DateTime now = rtc.now();
+    float tempC = rtc.getTemperature();
 
-  File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
-  if (!logFile) {
-    Serial.println("Failed to open log file");
-    return;
-  }
-/*
-  DateTime now = rtc.now();
-  float tempC = rtc.getTemperature();  // Read DS3231 temperature
+    char timeStr[40];
+    snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d",
+            now.year(), now.month(), now.day(),
+            now.hour(), now.minute(), now.second());
 
-  char timeStr[30];
-  sprintf(timeStr, "%04d-%02d-%02d %02d:%02d:%02d",
-          now.year(), now.month(), now.day(),
-          now.hour(), now.minute(), now.second());   // Format: TrapName - Timestamp - Message - Temp
+    logFile.printf("%s - %s - %s - Temp: %.2f C\n",
+                   config.trapName.c_str(), timeStr, message.c_str(), tempC);
+    logFile.close();
+    Serial.printf("Logged: %s - %s - Temp: %.2f C\n", message.c_str(), timeStr, tempC);
 
-  logFile.printf("%s - %s - %s - Temp: %.2f C\n", config.trapName.c_str(), timeStr, message.c_str(), tempC);
-  logFile.close();
-  Serial.printf("Logged: %s - %s - Temp: %.2f C\n", message.c_str(), tempC);
-*/
-  // Enforce log limit
-  enforceLogLimit();
-  
+    enforceLogLimit();
 }
 
 // ====== LOG LIMIT ENFORCEMENT ======
@@ -570,6 +618,8 @@ void enforceLogLimit() {
     Serial.println("Old logs trimmed to maintain line limit.");
   }
 }
+
+
 void handleBluetoothCommands() {
   if (Serial.available()) {
     String input = Serial.readStringUntil('\n');
@@ -616,5 +666,3 @@ void loadSettings() {
     Serial.println("Failed to open config file for reading.");
   }
 }
-
-
