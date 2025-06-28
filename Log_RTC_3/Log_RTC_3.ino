@@ -21,6 +21,7 @@
 #define UART_CHAR_RX_UUID "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 #define UART_CHAR_TX_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define KNOCK_IGNORE_TIME 2000  // 2 seconds (adjust as needed)
+#define BLE_CHUNK_SIZE 20
 unsigned long knockIgnoreUntil = 0;
 
 NimBLECharacteristic* pTxCharacteristic;
@@ -42,13 +43,16 @@ void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) {
 const int lisIntPin = 3;  // LIS3DH INT1 connected to GPIO3
 const int ledPin = 8;     // Onboard LED (typically GPIO8)
 const unsigned long debounceDelay = 50;
+File logFile;
+int logLinesSent = 0;
+int linesPerPage = 10;
 
 // ====== GLOBAL OBJECTS ======
 
 RTC_DS3231 rtc;
 Adafruit_LIS3DH lis = Adafruit_LIS3DH();
 int tapCount = 2;      // Default value, can be 1 or 2
-int sensitivity = 20;  // default value, can be 1 to 200
+int sensitivity = 20;  // default value, can be 1 to 127
 
 
 // ====== FLAGS ======
@@ -71,7 +75,6 @@ String inputBuffer = "";
 // ====== FUNCTION DECLARATIONS ======
 void knockISR();
 void syncSystemTimeWithRTC();
-
 void loadConfig();
 void saveConfig();
 void updateLogFilePath();
@@ -89,20 +92,13 @@ void setup() {
   if (!SPIFFS.begin(true)) {
     Serial.println("SPIFFS Mount Failed!");
   }
- // Serial.print("Total SPIFFS: ");
- // Serial.println(SPIFFS.totalBytes());
- // Serial.print("Used SPIFFS: ");
- // Serial.println(SPIFFS.usedBytes());
 
   pinMode(lisIntPin, INPUT_PULLUP);
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, LOW);
 
-  //loadConfig();
-  //Serial.print("Loaded Trap Name: ");
-  //Serial.println(config.trapName);
-
   NimBLEDevice::init("TrapLogger");  // BLE device name
+  //NimBLEDevice::setMTU(512);         // Increase MTU size for better BLE data handling
   Serial.println("Bluetooth ready. Connect to: TrapLogger");
   NimBLEServer* pServer = NimBLEDevice::createServer();
   NimBLEService* pService = pServer->createService(UART_SERVICE_UUID);
@@ -114,7 +110,8 @@ void setup() {
 
   pTxCharacteristic = pService->createCharacteristic(
     UART_CHAR_TX_UUID,
-    NIMBLE_PROPERTY::NOTIFY);
+        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ); // Add READ for debugging
+//    NIMBLE_PROPERTY::NOTIFY);
 
   pService->start();
   NimBLEDevice::startAdvertising();
@@ -168,30 +165,32 @@ void IRAM_ATTR knockISR() {
 
 // ====== MAIN LOOP ======
 
-
 void loop() {
- if (knockDetected) {
+  if (knockDetected) {
     knockDetected = false;
     logEvent("KNOCK DETECTED");
 
-    if (pTxCharacteristic) { 
-        // Get timestamp and temperature for the BLE message
-        DateTime now = rtc.now();
-        float tempC = rtc.getTemperature();
-        char bleMsg[40];
-        snprintf(bleMsg, sizeof(bleMsg), "Knock! %04d-%02d-%02d %02d:%02d:%02d Temp: %.1f C\n",
-            now.year(), now.month(), now.day(),
-            now.hour(), now.minute(), now.second(), tempC);
+    if (pTxCharacteristic) {
+      DateTime now = rtc.now();
+      float tempC = rtc.getTemperature();
 
-        pTxCharacteristic->setValue(bleMsg);
-        pTxCharacteristic->notify();
+      char bleMsg[64];  // Enough space
+      int msgLen = snprintf(bleMsg, sizeof(bleMsg),
+        "Knock! %04d-%02d-%02d %02d:%02d:%02d Temp: %.1f C\r\n",
+        now.year(), now.month(), now.day(),
+        now.hour(), now.minute(), now.second(), tempC);
 
-        digitalWrite(ledPin, HIGH);
-        delay(200);
-        digitalWrite(ledPin, LOW);
-    } 
+      bleMsg[sizeof(bleMsg) - 1] = '\0';  // Extra safety
+      pTxCharacteristic->setValue((uint8_t*)bleMsg, msgLen);  // Correct cast
+      pTxCharacteristic->notify();
+
+      digitalWrite(ledPin, HIGH);
+      delay(200);
+      digitalWrite(ledPin, LOW);
+    }
   }
 }
+
 
 // ====== SYNC SYSTEM TIME FROM RTC ======
 void syncSystemTimeWithRTC() {
@@ -213,6 +212,7 @@ void syncSystemTimeWithRTC() {
 }
 
 void processCommand(String cmd) {
+    Serial.print("processCommand called with: ");
   cmd.trim();
   Serial.println("Command: " + cmd);
 
@@ -233,96 +233,45 @@ if (cmd.equalsIgnoreCase("HELP")) {
   pTxCharacteristic->setValue(helpText.c_str());
   pTxCharacteristic->notify();
 }
-  
-/*
-else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
-    File logFile = SPIFFS.open(logFilePath, FILE_READ);
-    if (!logFile || logFile.size() == 0) {
-        pTxCharacteristic->setValue("No logs found.");
-        pTxCharacteristic->notify();
-    } else {
-        String bleBuffer = "";
-        while (logFile.available()) {
-            char c = logFile.read();
-            bleBuffer += c;
-            // BLE notification size limit (20 bytes is safe for most clients)
-            if (bleBuffer.length() >= 20) {
-                pTxCharacteristic->setValue(bleBuffer.c_str());
-                pTxCharacteristic->notify();
-                bleBuffer = "";
-                delay(10); // Give BLE stack time to transmit
-            }
-        }
-        // Send any remaining data
-        if (bleBuffer.length() > 0) {
-            pTxCharacteristic->setValue(bleBuffer.c_str());
-            pTxCharacteristic->notify();
-        }
-    }
-    logFile.close();
-}
 
-else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
+ else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
     File logFile = SPIFFS.open(logFilePath, FILE_READ);
     if (!logFile || logFile.size() == 0) {
         pTxCharacteristic->setValue("No logs found.");
         pTxCharacteristic->notify();
+        Serial.println("No logs found."); 
     } else {
-        String bleBuffer = "";
-        const int chunkSize = 50; // or up to your negotiated MTU
-        while (logFile.available()) {
-            char c = logFile.read();
-            bleBuffer += c;
-            if (bleBuffer.length() >= chunkSize) {
-                pTxCharacteristic->setValue(bleBuffer.c_str());
-                pTxCharacteristic->notify();
-                bleBuffer = "";
-                delay(20); // give time for BLE stack
-            }
-        }
-        // Send any remaining data
-        if (bleBuffer.length() > 0) {
-            pTxCharacteristic->setValue(bleBuffer.c_str());
-            pTxCharacteristic->notify();
-        }
-    }
-    logFile.close();
-}
-*/
-else if (cmd.equalsIgnoreCase("SHOW_LOGS")) {
-    File logFile = SPIFFS.open(logFilePath, FILE_READ);
-    if (!logFile || logFile.size() == 0) {
-        pTxCharacteristic->setValue("No logs found.");
+        Serial.println("LOGS_START...");
+        pTxCharacteristic->setValue("LOGS_START\n");
         pTxCharacteristic->notify();
-    } else {
-        // Notify start of transmission
-        pTxCharacteristic->setValue("LOGS_START");
-        pTxCharacteristic->notify();
-        delay(20);
+        delay(100);  // Let client prepare
 
-        // Send each log line separately, or buffer multiple lines if they fit
-        String line;
         while (logFile.available()) {
-            line = logFile.readStringUntil('\n');
-            line.trim(); // remove any trailing newline or whitespace
+            String line = logFile.readStringUntil('\n');
+            line.trim();
+            Serial.println(line);
+
             if (line.length() > 0) {
-                // If line is longer than 20 bytes, split it further!
-                int startIdx = 0;
-                while (startIdx < line.length()) {
-                    String chunk = line.substring(startIdx, startIdx + 20);
-                    pTxCharacteristic->setValue(chunk.c_str());
-                    pTxCharacteristic->notify();
-                    delay(20); // 20ms delay between notifications
-                    startIdx += 20;
-                }
+               pTxCharacteristic->setValue((line + "\n").c_str());
+                pTxCharacteristic->notify(line + "\n");
+      
+                delay(15);  // Long enough for phone to handle each packet
             }
         }
-        // Notify end of transmission
-        pTxCharacteristic->setValue("LOGS_END");
+
+        //delay(300);  // Give time before end marker
+        pTxCharacteristic->setValue("End of LOGS\n");
         pTxCharacteristic->notify();
+
+        Serial.println("LOGS_END sent");
     }
+
     logFile.close();
 }
+ 
+
+
+
 
   else if (cmd.equalsIgnoreCase("CLEAR_LOGS")) {
     SPIFFS.remove(logFilePath);
@@ -369,7 +318,7 @@ pTxCharacteristic->notify();
     sprintf(rtcTime, "%04d-%02d-%02d %02d:%02d:%02d",
             now.year(), now.month(), now.day(),
             now.hour(), now.minute(), now.second());
-    pTxCharacteristic->setValue("RTC Time: " + String(rtcTime));
+    pTxCharacteristic->setValue("RTC Time: " + String(rtcTime) + "\n");
 pTxCharacteristic->notify();
   }
 
@@ -419,7 +368,7 @@ pTxCharacteristic->notify();
     }
 
     logEvent("NOTE " + noteMessage);  // Log the note with a timestamp
-    pTxCharacteristic->setValue("Note added: " + noteMessage);
+    pTxCharacteristic->setValue("Note added: " + noteMessage + "\n");
 pTxCharacteristic->notify();
   }
 
@@ -440,7 +389,7 @@ else if (cmd.equalsIgnoreCase("CURRENT_CONFIG")) {
     "DS3231 Temp: " + String(tempC, 2) + " C\n" +
     "Max Log Lines: " + String(config.lineCount) + "\n" +
     "Tap Detection: " + String(config.tapCount == 1 ? "Single Tap" : "Double Tap") + "\n" +
-    "Tap Sensitivity: " + String(config.sensitivity);
+    "Tap Sensitivity: " + String(config.sensitivity) + "\n";
 
   pTxCharacteristic->setValue(configText.c_str());
   pTxCharacteristic->notify();
@@ -498,33 +447,7 @@ pTxCharacteristic->notify();
   }
 }
 
-void handleCommand(String cmd) {
-  if (cmd.startsWith("SET_TAP")) {
-    // Example: SET_TAP 1 or SET_TAP 2
-    int newtapCount = cmd.substring(8).toInt(); // Extract the number after "SET_TAP "
-    if (newtapCount == 1 || newtapCount == 2) {
-      config.tapCount = newtapCount;  // Update the tap limit
-      saveConfig();  // Save the updated config to SPIFFS
-      Serial.print("Tap limit set to: ");
-      Serial.println(config.tapCount);
-    } else {
-      Serial.println("Invalid tap limit value. Use 1 or 2.");
-    }
-  }
-  
-  else if (cmd.startsWith("SET_SENSITIVITY")) {
-    // Example: SET_SENSITIVITY 100
-    int newSensitivity = cmd.substring(16).toInt();  // Extract the value after "SET_SENSITIVITY "
-    if (newSensitivity >= 1 && newSensitivity <= 127) {
-      config.sensitivity = newSensitivity;  // Update the sensitivity value
-      saveConfig();  // Save the updated config to SPIFFS
-      Serial.print("Sensitivity set to: ");
-      Serial.println(config.sensitivity);
-    } else {
-      Serial.println("Invalid sensitivity value. Use a value between 1 and 200.");
-    }
-  }
-}
+
 // ====== CONFIG FILE HANDLING ======
 void loadConfig() {
   File file = SPIFFS.open(configFilePath, FILE_READ);
@@ -571,9 +494,7 @@ void updateLogFilePath() {
 }
 
  // ====== LOGGING FUNCTION ======
-void logEvent(String message) {
-   // Serial.println("logEvent called with msg: " + message);
-
+void logEvent(String message) {     // Serial.println("logEvent called with msg: " + message);
     File logFile = SPIFFS.open(logFilePath, FILE_APPEND);
     if (!logFile) {
         Serial.println("Failed to open log file");
@@ -590,8 +511,12 @@ void logEvent(String message) {
 
     logFile.printf("%s - %s - %s - Temp: %.2f C\n",
                    config.trapName.c_str(), timeStr, message.c_str(), tempC);
+
+    Serial.printf("Wrote log: %s - %s - %s - Temp: %.2f C\n",
+                  config.trapName.c_str(), timeStr, message.c_str(), tempC);       
+
     logFile.close();
-    Serial.printf("Logged: %s - %s - Temp: %.2f C\n", message.c_str(), timeStr, tempC);
+   // Serial.printf("Logged: %s - %s - Temp: %.2f C\n", message.c_str(), timeStr, tempC);
 
     enforceLogLimit();
 }
@@ -620,36 +545,6 @@ void enforceLogLimit() {
 }
 
 
-void handleBluetoothCommands() {
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim(); // Remove any whitespace/newline
-
-    if (input.startsWith("SET_TAP ")) {
-      int newTap = input.substring(8).toInt();
-      if (newTap == 1 || newTap == 2) {
-        tapCount = newTap;
-        lis.setClick(tapCount, sensitivity);
-        Serial.println("Tap setting updated.");
-      } else {
-        Serial.println("Invalid tap setting! Must be 1 or 2.");
-      }
-    } 
-    else if (input.startsWith("SET_SENSITIVITY ")) {
-      int newSensitivity = input.substring(16).toInt();
-      if (newSensitivity >= 1 && newSensitivity <= 200) {
-        sensitivity = newSensitivity;
-        lis.setClick(tapCount, sensitivity);
-        Serial.println("Sensitivity setting updated.");
-      } else {
-        Serial.println("Invalid sensitivity! Must be 1 to 200.");
-      }
-    } 
-    else {
-      Serial.println("Unknown command.");
-    }
-  }
-}
 void loadSettings() {
   File settingsFile = SPIFFS.open(configFilePath, "r");
   if (settingsFile) {
